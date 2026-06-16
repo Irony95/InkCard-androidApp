@@ -30,9 +30,6 @@ import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
-import com.ironie.einker.ImageHandler.Companion.convertToBW
-import com.ironie.einker.ImageHandler.Companion.convertToBWByteArray
-import com.ironie.einker.ImageHandler.Companion.cropAndScaleImage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -49,9 +46,16 @@ import kotlin.coroutines.resume
 
 
 enum class ButtonFunction(val desc: String) {
+    REFRESH("Refresh screen only"),
     LR_TAP("Tap left and right"),
-    REFRESH("Refresh screen"),
     SCROLL("Scroll top and bottom")
+}
+
+enum class ImageUpdateType(val desc: Int) {
+    BLACK_WHITE_FAST(1),
+    BLACK_WHITE(2),
+    FOUR_GRAY_WHITE(3),
+    FOUR_GRAY(4),
 }
 
 /*
@@ -67,19 +71,16 @@ class HandleScreenForegroundService : AccessibilityService() {
         const val ACTION_BROADCAST_TO_ACTIVITY = "BROADCAST_CARD"
         var SERVICE_RUNNING = false
     }
-
+    val searchTimeout = 5
     val job = SupervisorJob()
     private val scope = CoroutineScope(Dispatchers.IO + job)
     lateinit var bluetoothManager: BluetoothManager
     var bluetoothAdapter: BluetoothAdapter? = null
     var bleConn: BLEConn? = null
-
-    lateinit var mView: View
-    lateinit var mwindowManager: WindowManager
-    var overviewIsFullscreen = false
-    var overviewHidden = false
-
     var screenOverlay: ScreenOverlay? = null
+    var imagesSent = 0
+    var refreshRate = 1
+
 
     //invoked when service is created, i.e. setup
     override fun onCreate() {
@@ -96,28 +97,9 @@ class HandleScreenForegroundService : AccessibilityService() {
         createNotificationChannel()
     }
 
-    private fun setOverviewFullscreen(isFullscreen: Boolean) {
-        if (isFullscreen) mView.findViewById<LinearLayout>(R.id.layout_buttons).visibility = View.GONE
-        if (isFullscreen) overviewHidden = true
-
-        val height = if (isFullscreen) WindowManager.LayoutParams.MATCH_PARENT
-            else WindowManager.LayoutParams.WRAP_CONTENT
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT, height,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        )
-        params.gravity = Gravity.TOP
-
-        val text = if (isFullscreen) "Enable Touch" else "Disable Touch"
-        mView.findViewById<Button>(R.id.btn_enable_screen).text = text
-        mwindowManager.updateViewLayout(mView, params)
-    }
-
     //invoked when startService() is called
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d("test", "onstart")
+        Log.d("test", "onstartCommand")
         if (intent?.action.equals(ACTION_STOP_SERVICE))
             pauseService()
 
@@ -130,97 +112,103 @@ class HandleScreenForegroundService : AccessibilityService() {
             startForeground()
 
             val useGrayscale = intent?.getBooleanExtra("useGrayscale", false)
-            val physicalBtnFunction = intent?.getSerializableExtra("btnFunction") as ButtonFunction
-            Log.d("test", physicalBtnFunction.desc)
+            refreshRate = intent?.getIntExtra("fullRefreshRate", 1)!!
+            val physicalBtnFunction = intent.getSerializableExtra("btnFunction", ButtonFunction::class.java)
+            Log.d("test", "refresh rate at $refreshRate")
+            Log.d("test", physicalBtnFunction!!.desc)
             screenOverlay!!.showOverlay()
 
-            bleConn = BLEConn(
-                this@HandleScreenForegroundService,
-                bluetoothManager,
-                {},
-                {},
-                { pauseService() }
-            )
+            suspend fun btn1Pressed()
+            {
+                if (bleConn?.deviceConnected == false)
+                    return
+                Log.d("test", "btn1 pressed")
 
-            scope.launch {
-                bleConn?.checkBluetoothConnectPermission()
-                bleConn?.connectToDevice()
+                        withContext(Dispatchers.Main) {
+                            val overlayIsFullscreen = screenOverlay!!.overviewIsFullscreen
+                            screenOverlay?.setOverviewFullscreen(false)
+                            delay(100)
+                            performScreenFunction(1, ButtonFunction.LR_TAP)
+                            delay(500)
+                            screenOverlay?.setOverviewFullscreen(overlayIsFullscreen)
+                        }
 
-                delay(100000)
+                val pic = getScreenBitmap()
+                val arr = ImageHandler.formatAndConvert(pic!!)
+                val addition = if (imagesSent % refreshRate == 0) 1 else 0
+                Log.d("test", "length of image bytes: ${arr.size}")
+                bleConn?.sendImage(arr, 0x02)
+                imagesSent++
+            }
+
+            suspend fun btn2Pressed()
+            {
+                if (bleConn?.deviceConnected == false)
+                    return
+                Log.d("test", "btn2 pressed")
+
+                    withContext(Dispatchers.Main) {
+                        val overlayIsFullscreen = screenOverlay!!.overviewIsFullscreen
+                        screenOverlay?.setOverviewFullscreen(false)
+                        delay(100)
+                        performScreenFunction(2, ButtonFunction.LR_TAP)
+                        delay(500)
+                        screenOverlay?.setOverviewFullscreen(overlayIsFullscreen)
+                        }
+
+                val pic = getScreenBitmap()
+                val arr = ImageHandler.formatAndConvert(pic!!)
+                val addition = if (imagesSent % refreshRate == 0) 1 else 0
+                Log.d("test", "length of image bytes: ${arr.size}")
+                bleConn?.sendImage(arr, 0x02)
+                imagesSent++
             }
 
 
-//            mmSocket = device!!.createRfcommSocketToServiceRecord(BTMODULEUUID)
-//            mmSocket.let { socket ->
-//                try {
-//                    socket?.connect()
-//                    val inStream: InputStream = socket!!.inputStream
-//                    val outStream: OutputStream = socket.outputStream
-//                    val buffer = ByteArray(1024)
-//                    SERVICE_RUNNING = true
-//                    scope.launch {
-//                        while (SERVICE_RUNNING && socket.isConnected)
-//                            loop(inStream, outStream, buffer)
-//                    }
-//                } catch (e : Exception) { stopSelf() }
-//            }
+            bleConn = BLEConn(
+                this@HandleScreenForegroundService,
+                bluetoothAdapter!!,
+                { scope.launch { btn1Pressed() } },
+                { scope.launch { btn2Pressed() } },
+                { pauseService("Device connection lost") }
+            )
+
+            //start search for card device
+            scope.launch {
+                val currTime = System.currentTimeMillis()
+                bleConn?.checkBluetoothConnectPermission()
+                bleConn?.scanForDevice( 30)
+                while (!(bleConn!!.foundDevice())) {
+                    if (System.currentTimeMillis() - currTime > searchTimeout*1000)
+                    {
+                        Log.d("test", "lah")
+                        pauseService("Could not find card, is it powered on?")
+                        return@launch
+                    }
+                    delay(1)
+                }
+                bleConn?.connectToDevice() {
+                    scope.launch {
+                        val pic = getScreenBitmap()
+                        val arr = ImageHandler.formatAndConvert(pic!!)
+                        bleConn?.sendImage(arr, ImageUpdateType.BLACK_WHITE.desc)
+                    }
+                }
+
+                imagesSent = 0
+                SERVICE_RUNNING = true
+
+                broadcastToActivity()
+            }
         }
 
         return super.onStartCommand(intent, flags, startId)
     }
 
-    private var prevBtn1State = false
-    private var prevBtn2State = false
-
-    private suspend fun loop(inStream: InputStream, outStream: OutputStream, buffer: ByteArray) = withContext(Dispatchers.IO)
-    {
-        //blocking until command
-        if (inStream.available() != 0)
-        {
-
-            val v = inStream.read()
-            //received status
-            if (v.toUByte().toInt() == 0xF1)
-            {
-                inStream.read(buffer)
-                val btn1 = (buffer[0].toInt() and 0b10000) != 0
-                val btn2 = (buffer[0].toInt() and 0b100000) != 0
-                //button Pressed
-                if ((btn1 && !prevBtn1State) || (btn2 && !prevBtn2State))
-                {
-                    val buttonPressed = if (btn1) 1 else 2
-
-                    withContext(Dispatchers.Main)
-                    {
-                        val currentOverviewSetting = overviewIsFullscreen
-                        setOverviewFullscreen(false)
-                        delay(100)
-                        performScreenFunction(buttonPressed, ButtonFunction.LR_TAP)
-                        delay(500)
-                        setOverviewFullscreen(currentOverviewSetting)
-                    }
-                    delay(100)
-                    val pic = getScreenBitmap() ?: return@withContext
-                    val bwMat = convertToBW(pic)
-                    val formatted = cropAndScaleImage(bwMat, bwMat.width(), 0, 70)
-//                    val cropped = cropSides(bwMat, top = 70, bottom = 150)
-//                    val formatted = fitAndScaleImage(cropped)
-                    val arr = convertToBWByteArray(formatted)
-//                    ImageHandler.sendBWImage(arr, outStream, inStream)
-                }
-                broadcastToActivity(buffer)
-
-                prevBtn1State = btn1
-                prevBtn2State = btn2
-            }
-        }
-        delay(50)
-    }
-
     suspend fun performScreenFunction(button: Int, function: ButtonFunction): Boolean
     {
-        val screenHeight = mwindowManager.currentWindowMetrics.bounds.height()
-        val screenWidth = mwindowManager.currentWindowMetrics.bounds.width()
+        val screenHeight = screenOverlay!!.windowManager.currentWindowMetrics.bounds.height()
+        val screenWidth = screenOverlay!!.windowManager.currentWindowMetrics.bounds.width()
 
         when (function) {
             ButtonFunction.LR_TAP -> {
@@ -237,7 +225,7 @@ class HandleScreenForegroundService : AccessibilityService() {
 
     suspend fun performTap(x: Float, y: Float): Boolean = suspendCancellableCoroutine { continuation ->
         val taps = Path().apply { moveTo(x, y) }
-        val stroke = GestureDescription.StrokeDescription(taps, 0, 200, false)
+        val stroke = GestureDescription.StrokeDescription(taps, 0, 100, false)
         val gestureBuilder = GestureDescription.Builder()
         gestureBuilder.addStroke(stroke)
 
@@ -254,18 +242,20 @@ class HandleScreenForegroundService : AccessibilityService() {
         }, null)
     }
 
-    fun pauseService()
+    fun pauseService(message: String? = null)
     {
-
+        SERVICE_RUNNING = false
         screenOverlay?.stopOverlay()
-//        (mView.parent as ViewGroup).removeAllViews()
 
         scope.coroutineContext.cancelChildren()
         val intent = Intent()
         intent.action = ACTION_BROADCAST_TO_ACTIVITY
         intent.putExtra("StopService", true)
+        if (message != null)
+            intent.putExtra("StopMessage", message)
         sendBroadcast(intent)
         SERVICE_RUNNING = false
+        broadcastToActivity()
         stopForeground(STOP_FOREGROUND_REMOVE)
 
         bleConn?.disconnect()
@@ -314,11 +304,11 @@ class HandleScreenForegroundService : AccessibilityService() {
     override fun onAccessibilityEvent(p0: AccessibilityEvent?) { }
     override fun onInterrupt() { }
 
-    fun broadcastToActivity(data: ByteArray)
+    fun broadcastToActivity()
     {
         val intent = Intent()
         intent.action = ACTION_BROADCAST_TO_ACTIVITY
-        intent.putExtra("Data", data)
+        intent.putExtra("Connected", SERVICE_RUNNING)
         sendBroadcast(intent)
     }
 

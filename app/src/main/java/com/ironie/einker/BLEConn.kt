@@ -6,6 +6,8 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+import android.bluetooth.BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothGattServer
 import android.bluetooth.BluetoothGattServerCallback
@@ -31,160 +33,218 @@ import androidx.annotation.RequiresPermission
 import androidx.core.content.ContextCompat
 import java.io.InputStream
 import java.io.OutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.Queue
 import java.util.UUID
+import java.util.concurrent.ConcurrentLinkedQueue
 
 class BLEConn(
-    private val bleContext: Context,
-    private val bluetoothManager: BluetoothManager,
+    private val context: Context,
+    private val bluetoothAdapter: BluetoothAdapter,
     private val btn1Function: () -> Unit,
     private val btn2Function: () -> Unit,
     private val onDisconnect: () -> Unit,
 ) {
-    private var context: Context? = null
+
+
+    private val MTU_SIZE = 517
+    private val CHUNK_SIZE = MTU_SIZE - 5
+    private val deviceName = "Eink Card"
 
     private val serviceUUID = UUID.fromString("00000000-0000-0000-0000-000000000000")
-    private lateinit var service: BluetoothGattService
     private val imageUUID = UUID.fromString("cba1d466-344c-4be3-ab3f-189f80dd7518")
-    private lateinit var imageChara: BluetoothGattCharacteristic
     private val btn1UUID = UUID.fromString("f78ebbff-c8b7-4107-93de-889a6a06d408")
-    private lateinit var btn1Chara: BluetoothGattCharacteristic
     private val btn2UUID = UUID.fromString("ca73b3ba-39f6-4ab3-91ae-186dc9577d99")
-    private lateinit var btn2Chara: BluetoothGattCharacteristic
     private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
-    var gattServer: BluetoothGattServer? = null
-    var gattAdvertiser: BluetoothLeAdvertiser? = null
-    var cardDevice: BluetoothDevice? = null
+    private val bluetoothLeScanner = bluetoothAdapter.bluetoothLeScanner
+    var bluetoothGatt: BluetoothGatt? = null
+    private var deviceAddress: String? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private var isScanning = false
+    private var isSendingData = false
+    var deviceConnected = false
 
-    private val advertiseCallback = object : AdvertiseCallback() {
-        override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
-            Log.d("test", "start success")
-            super.onStartSuccess(settingsInEffect)
-        }
+    private var onConnectFunction: (() -> Unit)? = null
+    private var imageQueue = ArrayDeque<Byte>()
 
-        override fun onStartFailure(errorCode: Int) {
-            Log.d("test", "start failed error code $errorCode")
-            super.onStartFailure(errorCode)
+    private var functionQueue = ConcurrentLinkedQueue<BLEFunction>()
+
+    private val scanCallback: ScanCallback = object : ScanCallback() {
+        @RequiresPermission(anyOf = (arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN)))
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            super.onScanResult(callbackType, result)
+            if (result.device.name == deviceName)
+            {
+                Log.d("test", "device found!")
+                deviceAddress = result.device.address
+                stopScanning()
+            }
         }
     }
 
-    val gattServerCallback = object : BluetoothGattServerCallback() {
-        override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int
-        ) {
-            Log.d("test", "new device connected")
-            cardDevice = device
+    private val bluetoothGattCallback = object : BluetoothGattCallback() {
+        @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+        override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                gatt?.requestMtu(MTU_SIZE)
+                Log.d("test", "connceted to device $status")
+            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                onDisconnect()
+                deviceConnected = false
+                deviceAddress = null
+                Log.d("test", "disconnected from device $status")
+            }
         }
 
         @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
-        override fun onCharacteristicReadRequest(device: BluetoothDevice, requestId: Int, offset: Int,
-            characteristic: BluetoothGattCharacteristic
-        ) {
-            super.onCharacteristicReadRequest(device, requestId, offset, characteristic)
-            Log.d("test", "chara read req")
-            // Send data back to the client
-//            gattServer!!.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, characteristic.value)
+        override fun onCharacteristicWrite(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?, status: Int) {
+            super.onCharacteristicWrite(gatt, characteristic, status)
+            if (imageQueue.isEmpty())
+            {
+                isSendingData = false
+                return
+            }
+
+            var byteCount = if (imageQueue.size > CHUNK_SIZE) CHUNK_SIZE else imageQueue.size
+            var byteList = List(byteCount) { imageQueue.removeFirst() }
+            val imgChar = gatt?.getService(serviceUUID)?.getCharacteristic(imageUUID)
+            gatt?.writeCharacteristic(imgChar!!, byteList.toByteArray(), WRITE_TYPE_NO_RESPONSE)
         }
 
-        override fun onCharacteristicWriteRequest(device: BluetoothDevice?, requestId: Int,
-            characteristic: BluetoothGattCharacteristic?, preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray?
+        @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+        override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
+            Log.d("test", "MTU changed to $mtu with status ${status == BluetoothGatt.GATT_SUCCESS}")
+            super.onMtuChanged(gatt, mtu, status)
+            gatt?.discoverServices()
+        }
+
+        @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+        override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
+            Log.d("test", "discovered services")
+            if (gatt?.getService(serviceUUID) != null)
+            {
+                enableNotifications(gatt, btn1UUID)
+                //we need to make a queue
+                //enableNotifications(gatt, btn2UUID)
+                deviceConnected = true
+                onConnectFunction?.invoke()
+            }
+        }
+        fun enableNotifications(gatt: BluetoothGatt, char: UUID) {
+            checkBluetoothConnectPermission()
+            val service = gatt.getService(serviceUUID)
+            val characteristic = service!!.getCharacteristic(char)
+            gatt.setCharacteristicNotification(characteristic, true)
+
+            val descriptor = characteristic.getDescriptor(CCCD_UUID)
+            gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        }
+
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, chara: BluetoothGattCharacteristic, value: ByteArray) {
+            super.onCharacteristicChanged(gatt, chara, value)
+            Log.d("test", "changed")
+            when (chara.uuid)
+            {
+                btn1UUID -> { btn1Function() }
+                btn2UUID -> { btn2Function() }
+            }
+        }
+
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+            status: Int
         ) {
-            super.onCharacteristicWriteRequest(device, requestId, characteristic, preparedWrite, responseNeeded, offset, value)
-            Log.d("test", "chara got written")
+            super.onCharacteristicRead(gatt, characteristic, value, status)
+            Log.d("test", value.toString())
         }
     }
 
+    @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
+    fun scanForDevice(scanDuration: Long)
+    {
+        val filters = listOf(
+            ScanFilter.Builder()
+                .setDeviceName(deviceName) // Filter by device name
+                .build()
+        )
+
+    // Define ScanSettings
+        val scanSettings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY) // Adjust based on use case
+            .build()
+
+        //start scanning for device
+        if (!isScanning)
+        {
+            isScanning = true
+            bluetoothLeScanner.startScan(filters, scanSettings, scanCallback)
+            handler.postDelayed({ stopScanning() }, scanDuration*1000)
+        }
+        //restart Scan
+        else
+        {
+            stopScanning()
+            scanForDevice(scanDuration)
+        }
+    }
+
+    fun foundDevice(): Boolean {
+        return deviceAddress != null
+    }
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
-    fun connectToDevice()
-    {
-        context = bleContext
-        val bluetoothAdapter = bluetoothManager.adapter
-        bluetoothAdapter.name = "Eink Server"
-        gattServer = bluetoothManager.openGattServer(context, gattServerCallback)
-
-        service = BluetoothGattService(serviceUUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
-
-        imageChara = BluetoothGattCharacteristic(imageUUID,
-            BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_NOTIFY,
-            BluetoothGattCharacteristic.PERMISSION_READ
-        )
-        val cccd = BluetoothGattDescriptor(
-            CCCD_UUID,
-            BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
-        )
-        imageChara.addDescriptor(cccd)
-        service.addCharacteristic(imageChara)
-
-        btn1Chara = BluetoothGattCharacteristic(btn1UUID,
-            BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_WRITE,
-            BluetoothGattCharacteristic.PERMISSION_READ or BluetoothGattCharacteristic.PERMISSION_WRITE
-        )
-        service.addCharacteristic(btn1Chara)
-
-        btn2Chara = BluetoothGattCharacteristic(btn2UUID,
-            BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_WRITE,
-            BluetoothGattCharacteristic.PERMISSION_READ or BluetoothGattCharacteristic.PERMISSION_WRITE
-        )
-        service.addCharacteristic(btn2Chara)
-
-        gattServer!!.addService(service)
-        gattAdvertiser = bluetoothAdapter.bluetoothLeAdvertiser
-
-        val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-            .setConnectable(true)
-            .setTimeout(0)
-            .build()
-
-        val data = AdvertiseData.Builder()
-            .addServiceUuid(ParcelUuid(serviceUUID))
-            .build()
-        val scanResponse = AdvertiseData.Builder()
-            .setIncludeDeviceName(true)
-            .build()
-
-        gattAdvertiser!!.startAdvertising(settings, data, scanResponse, advertiseCallback)
-
-        while (cardDevice == null) { }
-        Log.d("test", "connceted")
-        gattServer.
-//        gattServer?.notifyCharacteristicChanged(cardDevice!!, imageChara, false, byteArrayOf(0x01))
+    fun connectToDevice(onConnect: (() -> Unit)? = null) {
+        val device = bluetoothAdapter.getRemoteDevice(deviceAddress)
+        bluetoothGatt = device.connectGatt(context, false, bluetoothGattCallback, BluetoothDevice.TRANSPORT_LE)
+        onConnectFunction = onConnect
     }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
+    fun stopScanning()
+    {
+        isScanning = false
+        bluetoothLeScanner.stopScan(scanCallback)
+    }
+
 
     fun disconnect()
     {
         checkBluetoothConnectPermission()
-        gattAdvertiser?.stopAdvertising(advertiseCallback)
-        gattServer?.connectedDevices?.forEach {
-            gattServer!!.cancelConnection(it)
-        }
-        gattServer?.close()
+        deviceConnected = false
+        deviceAddress = null
+        bluetoothGatt?.close()
     }
 
-    private val CHUNK_SIZE = 511
-    private val CHUNK_OK = 0xFF
-    fun sendBWImage(image: ByteArray, outStream: OutputStream, inStream: InputStream)
+
+    fun sendImage(image: ByteArray, imageType: Int, timeout: Int = 5000)
     {
-        outStream.write(0x01)
-        while (inStream.read().toUByte().toInt() != CHUNK_OK) { /* wait for OK */ }
-        var bytesSent = 0
-        while (bytesSent < image.size)
-        {
-            val currentChunkSize = minOf(CHUNK_SIZE, image.size - bytesSent)
-            outStream.write(image, bytesSent, currentChunkSize)
-            outStream.flush()
+        checkBluetoothConnectPermission()
+        //already sending some data, do not send again to avoid messing up sequence
+        if (isSendingData || bluetoothGatt == null)
+            return
+        val service = bluetoothGatt!!.getService(serviceUUID)
+        val imageChar = service.getCharacteristic(imageUUID)
 
-            if (currentChunkSize == CHUNK_SIZE) {
-                while (inStream.read().toUByte().toInt() != CHUNK_OK) { /* Wait */ }
-            }
-            bytesSent += currentChunkSize
-        }
+        imageQueue.addAll(image.toList())
+//        val len = ByteBuffer
+//            .allocate(Int.SIZE_BYTES)
+//            .order(ByteOrder.LITTLE_ENDIAN)
+//            .putInt(imageQueue.size)
+//            .array()
+        val type = byteArrayOf(imageType.toByte())
+        //the rest of the data will be sent on callback
+        Log.d("test", "written char")
+        bluetoothGatt!!.writeCharacteristic(imageChar, type, WRITE_TYPE_NO_RESPONSE)
+//        isSendingData = true
     }
-
 
     fun checkBluetoothConnectPermission(): Boolean {
         return ContextCompat.checkSelfPermission(
-            bleContext,
+            context,
             Manifest.permission.BLUETOOTH_CONNECT
         ) == PackageManager.PERMISSION_GRANTED
     }

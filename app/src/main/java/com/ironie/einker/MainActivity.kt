@@ -65,8 +65,7 @@ import org.opencv.android.OpenCVLoader
 
 class MainActivity : ComponentActivity()  {
 
-    private val connectedLive = MutableLiveData(false)
-    val cardData = MutableLiveData<ByteArray?>(null)
+    val cardConnected = MutableLiveData(false)
 
     val hasPermissions = mutableStateOf(false)
     //update data here to display card status
@@ -77,13 +76,14 @@ class MainActivity : ComponentActivity()  {
             if (p1.action == HandleScreenForegroundService.ACTION_BROADCAST_TO_ACTIVITY)
                 if (p1.getBooleanExtra("StopService", false))
                 {
-                    connectedLive.postValue(false)
-                    cardData.postValue(null)
-                    Toast.makeText(this@MainActivity, "Connection Stopped", Toast.LENGTH_LONG).show()
+                    cardConnected.postValue(false)
+                    val message = p1.getStringExtra("StopMessage")
+                    Toast.makeText(this@MainActivity,
+                        message ?: "Connection Stopped", Toast.LENGTH_LONG).show()
                 }
                 else
                 {
-                    cardData.value = p1.getByteArrayExtra("Data")
+                    cardConnected.value = p1.getBooleanExtra("Connected", false)
                 }
         }
     }
@@ -101,7 +101,20 @@ class MainActivity : ComponentActivity()  {
                         .fillMaxWidth()
                         .fillMaxHeight()
                 ) {
-                    Settings(connectedLive, cardData, ::toggleService)
+                    Column(
+                        modifier = Modifier
+                        .padding(20.dp, top = 40.dp)
+                        .fillMaxWidth(),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        if (cardConnected.value == false)
+                            ShowNoCardStatus()
+                        else
+                            ShowCardStatus()
+
+                        Settings(cardConnected, ::toggleService)
+                    }
                     if (!perms) NoPermissionsCard()
                 }
             }
@@ -116,6 +129,54 @@ class MainActivity : ComponentActivity()  {
         super.onPostResume()
         hasPermissions.value = checkPermissions()
     }
+
+
+    @Composable
+    fun ShowNoCardStatus()
+    {
+        Column(
+            modifier = Modifier.padding(bottom = 20.dp)
+        ) {
+            Text(
+                "Card Not Connected",
+                modifier = Modifier.fillMaxWidth(),
+                fontSize = 30.sp,
+                textAlign = TextAlign.Center,
+                fontWeight = FontWeight.Bold,
+                color = Color.Red
+            )
+
+            Text("Select the correct device, give correct permissions and start the connection",
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 20.dp)
+            )
+        }
+    }
+
+    @Composable
+    fun ShowCardStatus()
+    {
+        Column(
+            modifier = Modifier.padding(bottom = 40.dp)
+        ) {
+            Text(
+                "Card Detected",
+                modifier = Modifier
+                    .fillMaxWidth(),
+                fontSize = 30.sp,
+                textAlign = TextAlign.Center,
+                fontWeight = FontWeight.Bold,
+                color = Color.Green
+            )
+
+            Text(
+                "MCU connected",
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+
 
     @Composable
     private fun NoPermissionsCard()
@@ -145,15 +206,15 @@ class MainActivity : ComponentActivity()  {
         super.onResume()
     }
 
-    private fun toggleService(useGrayscale: Boolean, btnFunction: ButtonFunction): Unit
+    private fun toggleService(useGrayscale: Boolean, refreshRate: Int, btnFunction: ButtonFunction): Unit
     {
         val service = Intent(this, HandleScreenForegroundService::class.java)
-        service.action = if (connectedLive.value == true) HandleScreenForegroundService.ACTION_STOP_SERVICE
+        service.action = if (cardConnected.value == true) HandleScreenForegroundService.ACTION_STOP_SERVICE
         else HandleScreenForegroundService.ACTION_START_SERVICE
-        service.putExtra("UseGrayscale", useGrayscale)
+        service.putExtra("useGrayscale", useGrayscale)
         service.putExtra("btnFunction", btnFunction)
+        service.putExtra("fullRefreshRate", refreshRate)
         this.startForegroundService(service)
-        connectedLive.value?.let { connectedLive.postValue(!it) }
     }
 
     private fun checkPermissions(): Boolean {

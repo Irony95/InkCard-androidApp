@@ -18,8 +18,17 @@ class ImageHandler {
 
     companion object {
 
-        const val CARD_IMG_WIDTH = 300
-        const val CARD_IMG_HEIGHT = 400
+        const val CARD_IMG_WIDTH = 480
+        const val CARD_IMG_HEIGHT = 800
+
+        fun formatAndConvert(src: Bitmap): ByteArray
+        {
+            val bwMat = convertToBW(src)
+            val cropped = cropSides(bwMat, top = 50, bottom = 50)
+            val formatted = fitAndScaleImage(cropped)
+            return convertToBWByteArray(formatted)
+        }
+
         fun bitmapToMat(src: Bitmap): Mat
         {
             val typed = src.copy(Bitmap.Config.ARGB_8888, true)
