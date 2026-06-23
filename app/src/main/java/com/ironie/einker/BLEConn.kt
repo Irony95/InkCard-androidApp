@@ -59,6 +59,8 @@ class BLEConn(
     private val imageUUID = UUID.fromString("cba1d466-344c-4be3-ab3f-189f80dd7518")
     private val btn1UUID = UUID.fromString("f78ebbff-c8b7-4107-93de-889a6a06d408")
     private val btn2UUID = UUID.fromString("ca73b3ba-39f6-4ab3-91ae-186dc9577d99")
+    private val widthUUID = UUID.fromString("27440532-c615-4a43-bbba-2e0ee40327c2")
+    private val heightUUID = UUID.fromString("12e9f06a-9c60-4430-bf43-8da3603fa765")
     private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
 
@@ -154,10 +156,13 @@ class BLEConn(
             Log.d("test", "discovered services")
             enableNotifications(btn1UUID)
             enableNotifications(btn2UUID)
+
             onConnect?.invoke()
+
             if (pendingOperation is DiscoverService)
                 signalEndOfOperation()
         }
+
 
         override fun onCharacteristicChanged(gatt: BluetoothGatt, chara: BluetoothGattCharacteristic, value: ByteArray) {
             super.onCharacteristicChanged(gatt, chara, value)

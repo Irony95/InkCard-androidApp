@@ -29,8 +29,13 @@ class ImageProcesses {
 
     companion object {
 
-        const val CARD_IMG_WIDTH = 480
-        const val CARD_IMG_HEIGHT = 800
+        var CARD_IMG_WIDTH = 480
+        var CARD_IMG_HEIGHT = 800
+
+        fun updateCardWidthHeight(width: Int, height: Int) {
+            CARD_IMG_HEIGHT =height
+            CARD_IMG_WIDTH = width
+        }
 
         fun formatAndConvertBW(src: Bitmap, dither: Boolean = true, invertColors: Boolean = false): ByteArray
         {
