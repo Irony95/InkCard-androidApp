@@ -28,7 +28,7 @@
         android:theme="@style/Theme.Einker">
 
         <service
-            android:name=".HandleScreenForegroundService"
+            android:name=".EinkCardForegroundService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="true"
             android:foregroundServiceType="connectedDevice">

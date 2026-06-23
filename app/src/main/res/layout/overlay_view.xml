@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#96000000"
@@ -30,31 +31,13 @@
             android:layout_height="wrap_content"
             android:text="Disable Touch"
             android:textSize="14sp" />
-
-        <Button
-            android:id="@+id/btn_invert_colors"
-            style="@android:style/Widget.Material.Button.Small"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Invert"
-            android:textSize="14sp" />
     </LinearLayout>
 
     <View
         android:id="@+id/empty_view"
         android:layout_width="0dp"
         android:layout_height="0dp"
-        android:layout_weight="1" />
-
-    <ImageButton
-        android:id="@+id/btn_hide"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_margin="5dp"
-        android:layout_weight="0"
-        android:background="@null"
-        android:padding="10dp"
-        android:src="@drawable/outline_arrow_menu_close_24"
-        android:tint="#FFFFFF" />
+        android:layout_weight="1"
+        tools:visibility="visible" />
 
 </LinearLayout>

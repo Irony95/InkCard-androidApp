@@ -42,18 +42,22 @@ import kotlin.math.round
 @Composable
 fun Settings(
     connectedLive: MutableLiveData<Boolean>,
-    toggleService: (Boolean, Int, ButtonFunction) -> Unit)
+    deviceAddressLive: MutableLiveData<String?>,
+    toggleService: (Boolean, Boolean, Boolean, Int, ButtonFunction) -> Unit)
 {
     val connected: Boolean? by connectedLive.observeAsState()
+    val deviceAddress by deviceAddressLive.observeAsState()
 
     var useGrayscale by rememberSaveable { mutableStateOf(false) }
+    var dither by rememberSaveable { mutableStateOf(true) }
+    var invertColors by remember { mutableStateOf(false) }
     var refreshRate by rememberSaveable { mutableIntStateOf(4) }
 
     val buttonSettings = ButtonFunction.entries
     var buttonAction by remember { mutableStateOf(buttonSettings[0]) }
 
     Column(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
 
@@ -69,15 +73,17 @@ fun Settings(
             )
         Column(modifier = Modifier.padding(horizontal = 10.dp)) {
             GrayscaleSetting(useGrayscale, onGrayscaleChange = { useGrayscale = it})
+            DitheringSetting(dither, onDitherChange = {dither = it})
+            InvertSetting(invertColors, onInvertChange = {invertColors = it })
 
-            RefreshSlider(refreshRate, onChange = {refreshRate = round(1+it*7).toInt() })
+            RefreshSlider(refreshRate, enabled = !useGrayscale, onChange = {refreshRate = round(1+it*7).toInt() })
             PhysicalButtonSettings(buttonSettings, buttonAction, onSelectChange = { buttonAction = it })
         }
 
         Button(
             modifier = Modifier.padding(top=100.dp),
-            enabled = true,
-            onClick = { toggleService(useGrayscale, refreshRate, buttonAction) }
+            enabled = (deviceAddress != null || connected == true),
+            onClick = { toggleService(useGrayscale, dither, invertColors, refreshRate, buttonAction) }
         ) {
             Text("${if(connected == true) "Stop" else "Start"} Connection")
         }
@@ -100,12 +106,42 @@ fun GrayscaleSetting(useGrayscale: Boolean, onGrayscaleChange: (Boolean) -> Unit
 }
 
 @Composable
-fun RefreshSlider(refreshRate: Int, onChange: (Float) -> Unit) {
+fun InvertSetting(invert: Boolean, onInvertChange: (Boolean) -> Unit)
+{
     Row(
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(text = "Full refresh rate: $refreshRate", fontWeight = FontWeight.Bold)
-        Slider(value = ((refreshRate-1)/7.0).toFloat(), onValueChange = onChange)
+        Text("Invert coloring", fontWeight = FontWeight.Bold)
+        Switch(
+            modifier = Modifier.padding(horizontal = 5.dp),
+            checked = invert,
+            onCheckedChange = onInvertChange
+        )
+    }
+}
+
+@Composable
+fun DitheringSetting(dither: Boolean, onDitherChange: (Boolean) -> Unit)
+{
+    Row(
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("Dither Pixels", fontWeight = FontWeight.Bold)
+        Switch(
+            modifier = Modifier.padding(horizontal = 5.dp),
+            checked = dither,
+            onCheckedChange = onDitherChange
+        )
+    }
+}
+
+@Composable
+fun RefreshSlider(refreshRate: Int, enabled: Boolean, onChange: (Float) -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(text = "Full refresh rate: $refreshRate", color = (if (enabled) Color.Black else Color.LightGray), fontWeight = FontWeight.Bold )
+        Slider(enabled = enabled, value = ((refreshRate-1)/7.0).toFloat(), onValueChange = onChange)
     }
 }
 

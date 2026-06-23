@@ -1,5 +1,7 @@
 <resources>
     <string name="app_name">Einker</string>
     <string name="title_activity_nfchandling">NFCHandlingActivity</string>
-    <string name="accessibility_service_description">Card</string>
+    <string name="accessibility_service_description">
+        Service required to take screenshots, and perform screen touches.
+    </string>
 </resources>

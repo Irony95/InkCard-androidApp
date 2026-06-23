@@ -2,6 +2,10 @@ package com.ironie.einker
 
 import android.Manifest
 import android.R
+import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.annotation.SuppressLint
+import android.app.Service
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
@@ -24,6 +28,7 @@ import android.provider.Settings
 import android.util.Log
 import android.view.Surface
 import android.view.SurfaceView
+import android.view.accessibility.AccessibilityManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -66,35 +71,52 @@ import org.opencv.android.OpenCVLoader
 class MainActivity : ComponentActivity()  {
 
     val cardConnected = MutableLiveData(false)
-
     val hasPermissions = mutableStateOf(false)
-    //update data here to display card status
+
+    val accessibilityRunning = mutableStateOf(false)
+    lateinit var bleScanner: BLEScanner
+    val deviceAddress = MutableLiveData<String?>(null)
+
+    //updates from the foreground service
     val receiver: BroadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(p0: Context?, p1: Intent?) {
             if (p1 == null)
                 return
-            if (p1.action == HandleScreenForegroundService.ACTION_BROADCAST_TO_ACTIVITY)
+            if (p1.action == EinkCardForegroundService.ACTION_BROADCAST_TO_ACTIVITY)
                 if (p1.getBooleanExtra("StopService", false))
                 {
                     cardConnected.postValue(false)
+                    if (hasPermissions.value)
+                    {
+                        bleScanner.startScan(15)
+                    }
                     val message = p1.getStringExtra("StopMessage")
                     Toast.makeText(this@MainActivity,
                         message ?: "Connection Stopped", Toast.LENGTH_LONG).show()
                 }
                 else
                 {
-                    cardConnected.value = p1.getBooleanExtra("Connected", false)
+                    val connected = p1.getBooleanExtra("cardConnection", false)
+                    cardConnected.postValue(connected)
+                    if (hasPermissions.value && connected)
+                        bleScanner.stopScanning()
+
                 }
         }
     }
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val adapter = getSystemService(BluetoothManager::class.java).adapter
+        bleScanner = BLEScanner(this, adapter, deviceAddress)
 
         super.onCreate(savedInstanceState)
         setContent {
+            val connectedState by cardConnected.observeAsState()
+            val cardAddress by deviceAddress.observeAsState()
             EinkerTheme {
                 val perms by remember { hasPermissions }
+                val accessService by remember { accessibilityRunning }
 
                 Box(
                     modifier = Modifier
@@ -108,75 +130,35 @@ class MainActivity : ComponentActivity()  {
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        if (cardConnected.value == false)
+                        if (cardAddress == null && connectedState == false)
                             ShowNoCardStatus()
+                        else if (connectedState == false)
+                            ShowCardFoundStatus()
                         else
-                            ShowCardStatus()
+                            ShowCardConnectedStatus()
 
-                        Settings(cardConnected, ::toggleService)
+                        Settings(cardConnected, deviceAddress, ::toggleService)
                     }
                     if (!perms) NoPermissionsCard()
+                    else if (!accessService) ServiceNotRunning()
                 }
             }
         }
 
         registerReceiver(receiver,
-            IntentFilter(HandleScreenForegroundService.ACTION_BROADCAST_TO_ACTIVITY),
+            IntentFilter(EinkCardForegroundService.ACTION_BROADCAST_TO_ACTIVITY),
             RECEIVER_NOT_EXPORTED)
     }
 
-    override fun onPostResume() {
-        super.onPostResume()
-        hasPermissions.value = checkPermissions()
+    override fun onPause() {
+        super.onPause()
+        if (hasPermissions.value)
+            bleScanner.stopScanning()
     }
 
-
-    @Composable
-    fun ShowNoCardStatus()
-    {
-        Column(
-            modifier = Modifier.padding(bottom = 20.dp)
-        ) {
-            Text(
-                "Card Not Connected",
-                modifier = Modifier.fillMaxWidth(),
-                fontSize = 30.sp,
-                textAlign = TextAlign.Center,
-                fontWeight = FontWeight.Bold,
-                color = Color.Red
-            )
-
-            Text("Select the correct device, give correct permissions and start the connection",
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = 20.dp)
-            )
-        }
-    }
-
-    @Composable
-    fun ShowCardStatus()
-    {
-        Column(
-            modifier = Modifier.padding(bottom = 40.dp)
-        ) {
-            Text(
-                "Card Detected",
-                modifier = Modifier
-                    .fillMaxWidth(),
-                fontSize = 30.sp,
-                textAlign = TextAlign.Center,
-                fontWeight = FontWeight.Bold,
-                color = Color.Green
-            )
-
-            Text(
-                "MCU connected",
-                modifier = Modifier.fillMaxWidth(),
-                textAlign = TextAlign.Center,
-            )
-        }
-    }
-
+    val permissionRequest = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { }
 
     @Composable
     private fun NoPermissionsCard()
@@ -186,7 +168,10 @@ class MainActivity : ComponentActivity()  {
                 .fillMaxWidth()
                 .padding(15.dp),
             elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
-            onClick = {  }
+            onClick = {
+                permissionRequest.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS,
+                    Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN))
+            }
         ) {
             Column(modifier = Modifier.padding(15.dp)) {
                 Text("Required Permissions missing!",
@@ -197,24 +182,72 @@ class MainActivity : ComponentActivity()  {
                     color = Color.Yellow
                 )
 
-                Text("This app requires permissions to function. Please click here to enable them in the settings")
+                Text("This app requires permissions to function. Please click here to enable them in the settings" +
+                        "(Hint: Appear on top option also needs to be enabled)")
+            }
+        }
+    }
+
+    @Composable
+    private fun ServiceNotRunning()
+    {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(15.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
+            onClick = {
+                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                startActivity(intent)
+            }
+        ) {
+            Column(modifier = Modifier.padding(15.dp)) {
+                Text("Accessibility Not Running!",
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp,
+                    color = Color.Yellow
+                )
+
+                Text("This app requires functions from android's accessibility." +
+                        " Please click here, and navigate to 'Installed apps' to start it")
             }
         }
     }
 
     override fun onResume() {
         super.onResume()
+        hasPermissions.value = checkPermissions()
+        accessibilityRunning.value = checkAccessibilityServiceRunning()
+        if (hasPermissions.value)
+            bleScanner.startScan(15)
     }
 
-    private fun toggleService(useGrayscale: Boolean, refreshRate: Int, btnFunction: ButtonFunction): Unit
+    private fun toggleService(useGrayscale: Boolean, useDither: Boolean,
+                              invertColors: Boolean, refreshRate: Int,
+                              btnFunction: ButtonFunction)
     {
-        val service = Intent(this, HandleScreenForegroundService::class.java)
-        service.action = if (cardConnected.value == true) HandleScreenForegroundService.ACTION_STOP_SERVICE
-        else HandleScreenForegroundService.ACTION_START_SERVICE
+        val service = Intent(this, EinkCardForegroundService::class.java)
+        service.action = if (cardConnected.value == true) EinkCardForegroundService.ACTION_STOP_SERVICE
+        else EinkCardForegroundService.ACTION_START_SERVICE
+        service.putExtra("deviceAddress", deviceAddress.value)
         service.putExtra("useGrayscale", useGrayscale)
+        service.putExtra("useDither", useDither)
+        service.putExtra("invertColors", invertColors)
         service.putExtra("btnFunction", btnFunction)
         service.putExtra("fullRefreshRate", refreshRate)
         this.startForegroundService(service)
+    }
+
+    private fun checkAccessibilityServiceRunning(): Boolean {
+        val am = getSystemService(ACCESSIBILITY_SERVICE) as AccessibilityManager
+        am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK).forEach {
+            if (it.id.split('/')[1] == ".EinkCardForegroundService")
+                return true
+        }
+        return false
     }
 
     private fun checkPermissions(): Boolean {
@@ -223,6 +256,12 @@ class MainActivity : ComponentActivity()  {
             this,
             Manifest.permission.BLUETOOTH_CONNECT
         ) != PackageManager.PERMISSION_GRANTED)
+            return false
+
+        if (ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.BLUETOOTH_SCAN
+            ) != PackageManager.PERMISSION_GRANTED)
             return false
 
         //notifications
